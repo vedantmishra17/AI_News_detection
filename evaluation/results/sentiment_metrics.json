@@ -1,0 +1,55 @@
+{
+    "project": "News-melt-AI",
+    "task": "Binary sentiment classification",
+    "dataset": "GLUE SST-2 validation",
+    "model": "distilbert-base-uncased-finetuned-sst-2-english",
+    "evaluation_method": "Existing project sentiment inference; transformer required and non-binary predictions rejected.",
+    "sample_size": 500,
+    "accuracy": 0.912,
+    "positive_precision": 0.9018181818181819,
+    "positive_recall": 0.9358490566037736,
+    "positive_f1": 0.9185185185185185,
+    "confusion_matrix": {
+        "labels": [
+            "Negative",
+            "Positive"
+        ],
+        "values": [
+            [
+                208,
+                27
+            ],
+            [
+                17,
+                248
+            ]
+        ]
+    },
+    "classification_report": {
+        "Negative": {
+            "precision": 0.9244444444444444,
+            "recall": 0.8851063829787233,
+            "f1-score": 0.9043478260869565,
+            "support": 235.0
+        },
+        "Positive": {
+            "precision": 0.9018181818181819,
+            "recall": 0.9358490566037736,
+            "f1-score": 0.9185185185185185,
+            "support": 265.0
+        },
+        "accuracy": 0.912,
+        "macro avg": {
+            "precision": 0.9131313131313131,
+            "recall": 0.9104777197912485,
+            "f1-score": 0.9114331723027376,
+            "support": 500.0
+        },
+        "weighted avg": {
+            "precision": 0.9124525252525252,
+            "recall": 0.912,
+            "f1-score": 0.9118582930756844,
+            "support": 500.0
+        }
+    }
+}

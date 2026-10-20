@@ -288,34 +288,53 @@ def fetch_articles(query: str, use_newsapi: bool, use_rss: bool, rss_topic: str,
 
 
 def run_nlp_analysis(articles: list[dict]) -> list[dict]:
-    """Run NLP pipeline on all articles."""
+    """Run NLP analysis on collected news articles."""
+
+    if not articles:
+        return []
+
     analyzed = []
     progress = st.progress(0, text="Running NLP analysis…")
 
     for i, art in enumerate(articles):
-        text = clean_text(f"{art.get('title', '')} {art.get('description', '')}")
-        title = art.get("title", "")
+        # Safely retrieve article fields.
+        title = str(art.get("title") or "").strip()
+        description = str(art.get("description") or "").strip()
+        raw_content = str(art.get("content") or "").strip()
 
-        # Sentiment
+        # Prepare text for NLP analysis.
+        text = clean_text(f"{title} {description}")
+
+        # Sentiment analysis.
         art["sentiment"] = analyze_sentiment(text)
 
-        # Topic classification
+        # News topic classification.
         art["topic"] = classify_topic(text)
 
-        # Named entities
+        # Named Entity Recognition.
         art["entities"] = extract_entities(text)
 
-        # Summary (only if content is long enough)
-        content = clean_text(art.get("content", "") or art.get("description", ""))
+        # Summarization.
+        content = clean_text(raw_content or description)
+
         if len(content) > 100:
-            art["summary"] = summarize(content, max_length=60, min_length=15)
+            art["summary"] = summarize(
+                content,
+                max_length=60,
+                min_length=15,
+            )
         else:
-            art["summary"] = art.get("description", "")
+            art["summary"] = description or title or "No content available."
 
         analyzed.append(art)
-        progress.progress((i + 1) / len(articles), text=f"Analyzing {i+1}/{len(articles)} articles…")
+
+        progress.progress(
+            (i + 1) / len(articles),
+            text=f"Analyzing {i + 1}/{len(articles)} articles…",
+        )
 
     progress.empty()
+
     return analyzed
 
 

@@ -1,0 +1,178 @@
+"""
+News-melt-AI: Summarization Evaluation
+
+Dataset: CNN/DailyMail test split
+Model: facebook/bart-large-cnn
+Metrics: ROUGE-1, ROUGE-2, ROUGE-L
+
+Outputs:
+    evaluation/results/summarization_metrics.json
+    evaluation/results/summarization_predictions.csv
+"""
+
+import csv
+import json
+import sys
+from pathlib import Path
+
+from datasets import load_dataset
+from rouge_score import rouge_scorer
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.nlp.summarizer import _load_summarizer
+
+
+RESULTS_DIR = PROJECT_ROOT / "evaluation" / "results"
+METRICS_FILE = RESULTS_DIR / "summarization_metrics.json"
+PREDICTIONS_FILE = RESULTS_DIR / "summarization_predictions.csv"
+
+SAMPLE_SIZE = 100
+
+
+def main():
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 60)
+    print("NEWS-MELT-AI: SUMMARIZATION EVALUATION")
+    print("=" * 60)
+
+    print("\nLoading summarization model...")
+
+    summarizer = _load_summarizer()
+
+    if summarizer is None:
+        raise RuntimeError(
+            "The pretrained summarization model could not be loaded. "
+            "Evaluation stopped rather than substituting another method."
+        )
+
+    model_name = getattr(
+        summarizer.model.config,
+        "_name_or_path",
+        "facebook/bart-large-cnn",
+    )
+
+    print(f"Model: {model_name}")
+
+    print("\nLoading CNN/DailyMail test dataset...")
+
+    dataset = load_dataset(
+        "abisee/cnn_dailymail",
+        "3.0.0",
+        split="test",
+    )
+
+    dataset = dataset.select(
+        range(min(SAMPLE_SIZE, len(dataset)))
+    )
+
+    scorer = rouge_scorer.RougeScorer(
+        ["rouge1", "rouge2", "rougeL"],
+        use_stemmer=True,
+    )
+
+    results = []
+    rouge1_scores = []
+    rouge2_scores = []
+    rougeL_scores = []
+
+    print(f"\nEvaluating {len(dataset)} articles...")
+
+    for index, article in enumerate(dataset, start=1):
+        text = article["article"]
+        reference = article["highlights"]
+
+        # Match the project's current summarization input limit.
+        source_text = text[:1024]
+
+        generated = summarizer(
+            source_text,
+            max_length=60,
+            min_length=15,
+            do_sample=False,
+            truncation=True,
+        )[0]["summary_text"].strip()
+
+        scores = scorer.score(reference, generated)
+
+        rouge1 = scores["rouge1"].fmeasure
+        rouge2 = scores["rouge2"].fmeasure
+        rougeL = scores["rougeL"].fmeasure
+
+        rouge1_scores.append(rouge1)
+        rouge2_scores.append(rouge2)
+        rougeL_scores.append(rougeL)
+
+        results.append(
+            {
+                "article": source_text,
+                "reference_summary": reference,
+                "generated_summary": generated,
+                "rouge1_f1": round(rouge1, 4),
+                "rouge2_f1": round(rouge2, 4),
+                "rougeL_f1": round(rougeL, 4),
+            }
+        )
+
+        if index % 10 == 0 or index == len(dataset):
+            print(f"Processed {index}/{len(dataset)} articles")
+
+    metrics = {
+        "project": "News-melt-AI",
+        "task": "Abstractive summarization",
+        "dataset": "CNN/DailyMail 3.0.0 test split",
+        "model": model_name,
+        "sample_size": len(results),
+        "input_character_limit": 1024,
+        "rouge1_f1": sum(rouge1_scores) / len(rouge1_scores),
+        "rouge2_f1": sum(rouge2_scores) / len(rouge2_scores),
+        "rougeL_f1": sum(rougeL_scores) / len(rougeL_scores),
+        "limitations": [
+            "ROUGE measures text overlap, not factual correctness.",
+            "Only a sample of the test split is evaluated.",
+            "Input is truncated to match the project's current approach.",
+        ],
+    }
+
+    with METRICS_FILE.open("w", encoding="utf-8") as file:
+        json.dump(metrics, file, indent=4)
+
+    with PREDICTIONS_FILE.open(
+        "w",
+        encoding="utf-8",
+        newline="",
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "article",
+                "reference_summary",
+                "generated_summary",
+                "rouge1_f1",
+                "rouge2_f1",
+                "rougeL_f1",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(results)
+
+    print("\n" + "=" * 60)
+    print("SUMMARIZATION RESULTS")
+    print("=" * 60)
+    print(f"Dataset : CNN/DailyMail 3.0.0 test")
+    print(f"Model   : {model_name}")
+    print(f"Samples : {len(results)}")
+    print(f"ROUGE-1 : {metrics['rouge1_f1']:.4f}")
+    print(f"ROUGE-2 : {metrics['rouge2_f1']:.4f}")
+    print(f"ROUGE-L : {metrics['rougeL_f1']:.4f}")
+
+    print(f"\nMetrics saved to: {METRICS_FILE}")
+    print(f"Predictions saved to: {PREDICTIONS_FILE}")
+
+
+if __name__ == "__main__":
+    main()

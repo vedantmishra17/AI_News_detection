@@ -1,0 +1,14 @@
+{
+    "dataset": "CoNLL-2003 test",
+    "model": "en_core_web_sm",
+    "samples": 500,
+    "entity_types": [
+        "PERSON",
+        "ORG",
+        "GPE"
+    ],
+    "precision": 0.6794520547945205,
+    "recall": 0.5403050108932462,
+    "f1": 0.6019417475728156,
+    "classification_report": "              precision    recall  f1-score   support\n\n         GPE     0.7739    0.7014    0.7359       288\n         ORG     0.2814    0.2500    0.2648       188\n      PERSON     0.8179    0.5588    0.6640       442\n\n   micro avg     0.6795    0.5403    0.6019       918\n   macro avg     0.6244    0.5034    0.5549       918\nweighted avg     0.6942    0.5403    0.6048       918\n"
+}

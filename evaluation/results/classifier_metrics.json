@@ -1,0 +1,94 @@
+{
+    "project": "News-melt-AI",
+    "task": "Zero-shot topic classification",
+    "dataset": "AG News test split",
+    "model": "facebook/bart-large-mnli",
+    "sample_size": 500,
+    "candidate_categories": [
+        "World News",
+        "Sports",
+        "Business & Finance",
+        "Technology"
+    ],
+    "accuracy": 0.744,
+    "macro_f1": 0.6955567980985966,
+    "weighted_f1": 0.7177533714066201,
+    "confusion_matrix": {
+        "labels": [
+            "World News",
+            "Sports",
+            "Business & Finance",
+            "Technology"
+        ],
+        "values": [
+            [
+                93,
+                7,
+                0,
+                22
+            ],
+            [
+                1,
+                143,
+                1,
+                0
+            ],
+            [
+                47,
+                3,
+                27,
+                29
+            ],
+            [
+                15,
+                1,
+                2,
+                109
+            ]
+        ]
+    },
+    "classification_report": {
+        "World News": {
+            "precision": 0.5961538461538461,
+            "recall": 0.7622950819672131,
+            "f1-score": 0.6690647482014388,
+            "support": 122.0
+        },
+        "Sports": {
+            "precision": 0.9285714285714286,
+            "recall": 0.9862068965517241,
+            "f1-score": 0.9565217391304348,
+            "support": 145.0
+        },
+        "Business & Finance": {
+            "precision": 0.9,
+            "recall": 0.25471698113207547,
+            "f1-score": 0.39705882352941174,
+            "support": 106.0
+        },
+        "Technology": {
+            "precision": 0.68125,
+            "recall": 0.8582677165354331,
+            "f1-score": 0.759581881533101,
+            "support": 127.0
+        },
+        "accuracy": 0.744,
+        "macro avg": {
+            "precision": 0.7764938186813186,
+            "recall": 0.7153716690466114,
+            "f1-score": 0.6955567980985966,
+            "support": 500.0
+        },
+        "weighted avg": {
+            "precision": 0.7785847527472528,
+            "recall": 0.744,
+            "f1-score": 0.7177533714066201,
+            "support": 500.0
+        }
+    },
+    "limitations": [
+        "AG News has four broad categories; results do not validate all ten application categories.",
+        "The evaluation uses the first 512 characters of each article, matching the application's truncation.",
+        "The application accepts ten categories, while this evaluation restricts candidates to the four AG News categories for a compatible comparison."
+    ]
+}

@@ -10,23 +10,38 @@ from datetime import datetime
 
 def deduplicate_articles(articles: list[dict]) -> list[dict]:
     """
-    Remove duplicate articles based on title similarity.
-
-    Args:
-        articles: List of article dicts
-
-    Returns:
-        Deduplicated list
+    Remove duplicate articles using normalized URLs and titles.
+    Preserve the original order of articles.
     """
-    seen = set()
+    seen_urls = set()
+    seen_titles = set()
     unique = []
+
     for art in articles:
-        title = art.get("title", "").strip().lower()
-        # Create a hash of the normalized title
-        title_hash = hashlib.md5(re.sub(r"\W+", "", title).encode()).hexdigest()
-        if title_hash not in seen:
-            seen.add(title_hash)
-            unique.append(art)
+        url = (art.get("url") or "").strip().rstrip("/")
+        title = (art.get("title") or "").strip().lower()
+
+        normalized_title = re.sub(r"\W+", "", title, flags=re.UNICODE)
+
+        # Prefer URL-based deduplication when a URL is available.
+        if url:
+            normalized_url = url.lower()
+
+            if normalized_url in seen_urls:
+                continue
+
+            seen_urls.add(normalized_url)
+
+        # Use title as a fallback when a URL is unavailable.
+        elif normalized_title:
+            if normalized_title in seen_titles:
+                continue
+
+            seen_titles.add(normalized_title)
+
+        # Keep articles that have neither a URL nor a title.
+        unique.append(art)
+
     return unique
 
 
@@ -84,13 +99,22 @@ def truncate_text(text: str, max_chars: int = 200) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Clean text by removing excessive whitespace and non-printable characters."""
+    """
+    Clean text by removing unwanted control characters
+    and normalizing whitespace while preserving Unicode.
+    """
     if not text:
         return ""
-    # Remove non-printable characters
-    text = re.sub(r"[^\x20-\x7E\n]", " ", text)
-    # Collapse whitespace
+
+    # Convert the input to a string to handle unexpected values safely.
+    text = str(text)
+
+    # Remove control characters except ordinary whitespace.
+    text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ", text)
+
+    # Normalize repeated spaces, tabs, and newlines.
     text = re.sub(r"\s+", " ", text)
+
     return text.strip()
 
 

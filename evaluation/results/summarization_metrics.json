@@ -1,0 +1,16 @@
+{
+    "project": "News-melt-AI",
+    "task": "Abstractive summarization",
+    "dataset": "CNN/DailyMail 3.0.0 test split",
+    "model": "facebook/bart-large-cnn",
+    "sample_size": 100,
+    "input_character_limit": 1024,
+    "rouge1_f1": 0.3698277244532518,
+    "rouge2_f1": 0.17264882505434392,
+    "rougeL_f1": 0.27964935386774836,
+    "limitations": [
+        "ROUGE measures text overlap, not factual correctness.",
+        "Only a sample of the test split is evaluated.",
+        "Input is truncated to match the project's current approach."
+    ]
+}
