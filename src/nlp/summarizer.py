@@ -41,8 +41,14 @@ def summarize(text: str, max_length: int = 80, min_length: int = 20) -> str:
 
     if pipe is not None:
         try:
-            # BART works best with <= 1024 tokens, truncate input text
-            input_text = text[:1024]
+            # Use the model tokenizer: 1024 is a token limit, not a character limit.
+            tokenizer = pipe.tokenizer
+            encoded = tokenizer(text, truncation=True, max_length=min(1024, tokenizer.model_max_length), return_tensors="pt")
+            input_text = tokenizer.decode(encoded["input_ids"][0], skip_special_tokens=True)
+            input_tokens = int(encoded["input_ids"].shape[-1])
+            # Keep summaries proportionate to short inputs and valid for generation.
+            max_length = max(8, min(int(max_length), input_tokens - 1, 120))
+            min_length = max(1, min(int(min_length), max_length - 1, max(4, input_tokens // 2)))
             result = pipe(
                 input_text,
                 max_length=max_length,
@@ -51,7 +57,7 @@ def summarize(text: str, max_length: int = 80, min_length: int = 20) -> str:
             )
             return result[0]["summary_text"].strip()
         except Exception as e:
-            print(f"[Summarizer] Inference error: {e}")
+            print(f"[Summarizer] Inference error: {type(e).__name__}")
 
     # Fallback: simple extractive summarization (first 2 sentences)
     return _extractive_summary(text, num_sentences=2)

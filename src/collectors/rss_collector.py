@@ -1,14 +1,15 @@
-"""
-RSS Collector
-Fetches news from Google News RSS feeds and other RSS sources.
-"""
+"""Fetch news from Google News RSS feeds and other RSS/Atom sources."""
+
+import logging
+from urllib.parse import quote_plus
 
 import feedparser
-from datetime import datetime
-from email.utils import parsedate_to_datetime
+import requests
 
+from src.utils.helpers import clean_text, normalize_article
 
-# Google News RSS topic feeds
+logger = logging.getLogger(__name__)
+
 GOOGLE_NEWS_TOPICS = {
     "World": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx1YlY4U0FtVnVHZ0pWVXlnQVAB",
     "Technology": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB",
@@ -18,81 +19,81 @@ GOOGLE_NEWS_TOPICS = {
     "Sports": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRFp1ZEdvU0FtVnVHZ0pWVXlnQVAB",
     "Entertainment": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNREpxYW5RU0FtVnVHZ0pWVXlnQVAB",
 }
-
 GOOGLE_NEWS_SEARCH_BASE = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 
 
 class RSSCollector:
-    """Collects news from Google News RSS and other RSS feeds."""
+    """Collect RSS records with a bounded network timeout and item count."""
+
+    def __init__(self):
+        self.last_error = None
 
     def get_topic_feed(self, topic: str = "World", max_items: int = 30) -> list[dict]:
-        """Fetch articles from a Google News topic feed."""
         url = GOOGLE_NEWS_TOPICS.get(topic, GOOGLE_NEWS_TOPICS["World"])
         return self._fetch_rss(url, source=f"Google News ({topic})", max_items=max_items)
 
     def search_feed(self, query: str, max_items: int = 30) -> list[dict]:
-        """Search Google News RSS by keyword."""
-        url = GOOGLE_NEWS_SEARCH_BASE.format(query=query.replace(" ", "+"))
+        url = GOOGLE_NEWS_SEARCH_BASE.format(query=quote_plus(query or ""))
         return self._fetch_rss(url, source="Google News Search", max_items=max_items)
 
     def fetch_custom_feed(self, url: str, source_name: str = "RSS", max_items: int = 30) -> list[dict]:
-        """Fetch any arbitrary RSS/Atom feed."""
         return self._fetch_rss(url, source=source_name, max_items=max_items)
 
     def _fetch_rss(self, url: str, source: str, max_items: int) -> list[dict]:
-        """Internal method to parse an RSS feed."""
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            self.last_error = "invalid_url"
+            logger.warning("RSS feed URL must use HTTP or HTTPS.")
+            return []
         try:
-            feed = feedparser.parse(url)
+            response = requests.get(url, timeout=(5, 15), headers={"User-Agent": "News-melt-AI/1.0"})
+            response.raise_for_status()
+            feed = feedparser.parse(response.content)
+            if getattr(feed, "bozo", False):
+                self.last_error = "malformed_feed"
+                logger.warning("RSS parser reported malformed feed content for %s.", source)
             articles = []
-            for entry in feed.entries[:max_items]:
-                title = entry.get("title", "").strip()
+            for entry in feed.entries[:max(0, min(int(max_items), 100))]:
+                if not isinstance(entry, dict):
+                    continue
+                title = clean_text(entry.get("title") or "")
                 if not title:
                     continue
-
-                # Parse published date
-                published_at = ""
-                if hasattr(entry, "published"):
-                    try:
-                        dt = parsedate_to_datetime(entry.published)
-                        published_at = dt.isoformat()
-                    except Exception:
-                        published_at = entry.get("published", "")
-
-                # Extract description — strip HTML tags from summary
-                summary = entry.get("summary", "") or ""
-                description = self._strip_html(summary)
-
-                articles.append(
-                    {
-                        "title": title,
-                        "description": description,
-                        "content": description,
-                        "url": entry.get("link", ""),
-                        "source": source,
-                        "published_at": published_at,
-                        "image_url": self._extract_image(entry),
-                        "collector": "RSS",
-                    }
-                )
+                description = self._strip_html(entry.get("summary") or "")
+                articles.append(normalize_article({
+                    "title": title,
+                    "description": description,
+                    # Feeds generally provide snippets, not full article text.
+                    "content": "",
+                    "url": entry.get("link"),
+                    "source": source,
+                    "published_at": entry.get("published") or entry.get("updated"),
+                    "image_url": self._extract_image(entry),
+                    "collector": "RSS",
+                }, collector="RSS"))
+            if not getattr(feed, "bozo", False):
+                self.last_error = None
             return articles
-        except Exception as e:
-            print(f"[RSS] Error fetching feed ({url}): {e}")
+        except Exception as exc:
+            self.last_error = type(exc).__name__
+            logger.warning("RSS request failed for source %s (%s).", source, type(exc).__name__)
             return []
 
-    def _strip_html(self, text: str) -> str:
-        """Remove HTML tags from a string."""
+    @staticmethod
+    def _strip_html(text: str) -> str:
         from bs4 import BeautifulSoup
         try:
-            return BeautifulSoup(text, "html.parser").get_text(separator=" ").strip()
+            if not isinstance(text, str):
+                return clean_text(text)
+            return clean_text(BeautifulSoup(text, "html.parser").get_text(separator=" "))
         except Exception:
             return text
 
-    def _extract_image(self, entry) -> str:
-        """Try to extract a thumbnail image URL from the RSS entry."""
-        # Check media_thumbnail
-        if hasattr(entry, "media_thumbnail") and entry.media_thumbnail:
-            return entry.media_thumbnail[0].get("url", "")
-        # Check media_content
-        if hasattr(entry, "media_content") and entry.media_content:
-            return entry.media_content[0].get("url", "")
-        return ""
+    @staticmethod
+    def _extract_image(entry) -> str | None:
+        for key in ("media_thumbnail", "media_content"):
+            values = entry.get(key) or []
+            if values and isinstance(values[0], dict):
+                image = values[0].get("url")
+                if image and image.startswith(("https://", "http://")):
+                    return image
+        return None

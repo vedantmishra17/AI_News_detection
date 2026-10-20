@@ -12,6 +12,7 @@ Outputs:
 
 import csv
 import json
+import argparse
 import sys
 from pathlib import Path
 
@@ -30,10 +31,14 @@ RESULTS_DIR = PROJECT_ROOT / "evaluation" / "results"
 METRICS_FILE = RESULTS_DIR / "summarization_metrics.json"
 PREDICTIONS_FILE = RESULTS_DIR / "summarization_predictions.csv"
 
-SAMPLE_SIZE = 100
+DEFAULT_SAMPLE_SIZE = 100
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sample-size", type=int, default=DEFAULT_SAMPLE_SIZE,
+                        help="Number of initial CNN/DailyMail test records (default: 100)")
+    args = parser.parse_args()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
@@ -66,9 +71,7 @@ def main():
         split="test",
     )
 
-    dataset = dataset.select(
-        range(min(SAMPLE_SIZE, len(dataset)))
-    )
+    dataset = dataset.select(range(min(max(1, args.sample_size), len(dataset))))
 
     scorer = rouge_scorer.RougeScorer(
         ["rouge1", "rouge2", "rougeL"],
@@ -86,16 +89,26 @@ def main():
         text = article["article"]
         reference = article["highlights"]
 
-        # Match the project's current summarization input limit.
-        source_text = text[:1024]
-
-        generated = summarizer(
-            source_text,
-            max_length=60,
-            min_length=15,
-            do_sample=False,
-            truncation=True,
-        )[0]["summary_text"].strip()
+        source_text = ""
+        try:
+            encoded = summarizer.tokenizer(text, truncation=True, max_length=1024, return_tensors="pt")
+            source_text = summarizer.tokenizer.decode(encoded["input_ids"][0], skip_special_tokens=True)
+            input_tokens = int(encoded["input_ids"].shape[-1])
+            max_length = max(8, min(60, input_tokens - 1))
+            min_length = min(15, max_length - 1, max(4, input_tokens // 2))
+            generated = summarizer(
+                source_text,
+                max_length=max_length,
+                min_length=min_length,
+                do_sample=False,
+                truncation=True,
+            )[0]["summary_text"].strip()
+        except Exception as exc:
+            results.append({"article_id": article.get("id", ""), "article": source_text,
+                            "reference_summary": reference, "generated_summary": "",
+                            "rouge1_f1": "", "rouge2_f1": "", "rougeL_f1": "",
+                            "error": type(exc).__name__})
+            continue
 
         scores = scorer.score(reference, generated)
 
@@ -110,33 +123,43 @@ def main():
         results.append(
             {
                 "article": source_text,
+                "article_id": article.get("id", ""),
                 "reference_summary": reference,
                 "generated_summary": generated,
                 "rouge1_f1": round(rouge1, 4),
                 "rouge2_f1": round(rouge2, 4),
                 "rougeL_f1": round(rougeL, 4),
+                "error": "",
             }
         )
 
         if index % 10 == 0 or index == len(dataset):
-            print(f"Processed {index}/{len(dataset)} articles")
+            print(f"Processed {index}/{len(dataset)} articles", flush=True)
 
     metrics = {
         "project": "News-melt-AI",
         "task": "Abstractive summarization",
         "dataset": "CNN/DailyMail 3.0.0 test split",
+        "dataset_id": "abisee/cnn_dailymail",
+        "dataset_configuration": "3.0.0",
+        "sampling": f"First {len(dataset)} records of test split; deterministic, no shuffle.",
         "model": model_name,
-        "sample_size": len(results),
-        "input_character_limit": 1024,
-        "rouge1_f1": sum(rouge1_scores) / len(rouge1_scores),
-        "rouge2_f1": sum(rouge2_scores) / len(rouge2_scores),
-        "rougeL_f1": sum(rougeL_scores) / len(rougeL_scores),
+        "requested_sample_size": len(dataset),
+        "sample_size": len(rouge1_scores),
+        "inference_failures": len(dataset) - len(rouge1_scores),
+        "input_token_limit": 1024,
+        "rouge1_f1": sum(rouge1_scores) / len(rouge1_scores) if rouge1_scores else None,
+        "rouge2_f1": sum(rouge2_scores) / len(rouge2_scores) if rouge2_scores else None,
+        "rougeL_f1": sum(rougeL_scores) / len(rougeL_scores) if rougeL_scores else None,
         "limitations": [
             "ROUGE measures text overlap, not factual correctness.",
             "Only a sample of the test split is evaluated.",
             "Input is truncated to match the project's current approach.",
         ],
     }
+
+    if not rouge1_scores:
+        raise RuntimeError("Summarization inference failed for every requested article; no ROUGE metrics were computed.")
 
     with METRICS_FILE.open("w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=4)
@@ -150,11 +173,13 @@ def main():
             file,
             fieldnames=[
                 "article",
+                "article_id",
                 "reference_summary",
                 "generated_summary",
                 "rouge1_f1",
                 "rouge2_f1",
                 "rougeL_f1",
+                "error",
             ],
         )
         writer.writeheader()

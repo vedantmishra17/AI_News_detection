@@ -1,6 +1,6 @@
 """
 Keyword Extraction
-Extracts important keywords and phrases from news articles using TF-IDF and RAKE.
+Ranks single-document keywords by word frequency and provides corpus-level TF-IDF terms.
 Used to generate word clouds and trending topic lists.
 """
 
@@ -28,7 +28,7 @@ _STOPWORDS = {
 
 def extract_keywords(text: str, top_n: int = 15) -> list[tuple[str, float]]:
     """
-    Extract top keywords from text using TF-IDF (single document mode).
+    Rank single-token keywords by frequency within one document.
 
     Args:
         text: Article text

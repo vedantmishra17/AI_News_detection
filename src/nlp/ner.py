@@ -74,7 +74,11 @@ def aggregate_entities(articles: list[dict]) -> dict:
     counts = {"PERSON": Counter(), "ORG": Counter(), "GPE": Counter()}
 
     for article in articles:
-        entities = article.get("entities", {})
+        if not isinstance(article, dict):
+            continue
+        entities = article.get("entities") or {}
+        if not isinstance(entities, dict):
+            continue
         for category in ["PERSON", "ORG", "GPE"]:
             for name in entities.get(category, []):
                 counts[category][name] += 1

@@ -4,8 +4,39 @@ Shared utility functions for data normalization, deduplication, and formatting.
 """
 
 import re
-import hashlib
+import unicodedata
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
+
+
+ARTICLE_FIELDS = (
+    "title", "description", "content", "url", "source", "published_at",
+    "image_url", "collector", "sentiment", "topic", "entities", "summary",
+    "keywords",
+)
+
+
+def normalize_article(article: dict, collector: str = "") -> dict:
+    """Return a complete, JSON-friendly article record without inventing data."""
+    if not isinstance(article, dict):
+        article = {}
+    title = clean_text(article.get("title") or "")
+    description = clean_text(article.get("description") or "")
+    content = clean_text(article.get("content") or "")
+    published = normalize_date(article.get("published_at") or article.get("publishedAt"))
+    record = {
+        "title": title, "description": description,
+        # RSS snippets stay snippets; only use explicit content when supplied.
+        "content": content, "url": clean_text(article.get("url") or ""),
+        "source": clean_text(article.get("source") or "Unknown"),
+        "published_at": published.isoformat() if published else None,
+        "image_url": article.get("image_url") or None,
+        "collector": clean_text(article.get("collector") or collector),
+        "sentiment": article.get("sentiment"), "topic": article.get("topic"),
+        "entities": article.get("entities"), "summary": article.get("summary"),
+        "keywords": article.get("keywords"),
+    }
+    return record
 
 
 def deduplicate_articles(articles: list[dict]) -> list[dict]:
@@ -18,14 +49,24 @@ def deduplicate_articles(articles: list[dict]) -> list[dict]:
     unique = []
 
     for art in articles:
-        url = (art.get("url") or "").strip().rstrip("/")
-        title = (art.get("title") or "").strip().lower()
+        if not isinstance(art, dict):
+            continue
+        url = clean_text(art.get("url") or "").strip().rstrip("/")
+        title = clean_text(art.get("title") or "").strip().lower()
 
         normalized_title = re.sub(r"\W+", "", title, flags=re.UNICODE)
 
         # Prefer URL-based deduplication when a URL is available.
         if url:
-            normalized_url = url.lower()
+            try:
+                parts = urlsplit(url)
+                if parts.scheme and parts.netloc:
+                    path = parts.path.rstrip("/")
+                    normalized_url = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, parts.fragment))
+                else:
+                    normalized_url = url.rstrip("/")
+            except ValueError:
+                normalized_url = url.rstrip("/")
 
             if normalized_url in seen_urls:
                 continue
@@ -55,7 +96,9 @@ def normalize_date(date_str: str) -> datetime | None:
     Returns:
         datetime object or None
     """
-    if not date_str:
+    if isinstance(date_str, datetime):
+        return date_str
+    if not date_str or not isinstance(date_str, str):
         return None
 
     formats = [
@@ -107,10 +150,10 @@ def clean_text(text: str) -> str:
         return ""
 
     # Convert the input to a string to handle unexpected values safely.
-    text = str(text)
+    text = unicodedata.normalize("NFC", str(text))
 
-    # Remove control characters except ordinary whitespace.
-    text = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", " ", text)
+    # Remove Unicode control characters except whitespace separators.
+    text = "".join(" " if unicodedata.category(char) == "Cc" and not char.isspace() else char for char in text)
 
     # Normalize repeated spaces, tabs, and newlines.
     text = re.sub(r"\s+", " ", text)

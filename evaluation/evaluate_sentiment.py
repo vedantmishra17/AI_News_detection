@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.nlp.sentiment import analyze_sentiment, _load_pipeline
+from src.nlp.sentiment import _load_pipeline
 
 
 RESULTS_DIR = PROJECT_ROOT / "evaluation" / "results"
@@ -96,6 +96,7 @@ def main():
     y_true = dataset["label"]
 
     y_pred = []
+    y_true_scored = []
     rows = []
 
     print(f"\nEvaluating {len(texts)} examples...")
@@ -104,27 +105,21 @@ def main():
         zip(texts, y_true),
         start=1,
     ):
-        # Use the project's existing inference function.
-        # Verify its output against the loaded transformer pipeline.
-        result = analyze_sentiment(text)
-
-        if not isinstance(result, dict):
-            raise TypeError(
-                f"Expected a dictionary from analyze_sentiment(); "
-                f"received {type(result).__name__} at row {index}."
-            )
-
-        predicted_label = str(result.get("label", "")).strip().lower()
-
-        if predicted_label not in LABEL_TO_ID:
-            raise ValueError(
-                f"Unexpected sentiment label at row {index}: "
-                f"{result!r}. SST-2 requires Positive or Negative."
-            )
-
-        predicted_id = LABEL_TO_ID[predicted_label]
-
-        y_pred.append(predicted_id)
+        try:
+            # Call the loaded transformer directly so fallback predictions cannot
+            # be attributed to DistilBERT.
+            output = pipeline(text, truncation=True, max_length=512)[0]
+            predicted_label = str(output.get("label", "")).strip().lower()
+            if predicted_label not in LABEL_TO_ID:
+                raise ValueError(f"Unexpected transformer label: {predicted_label}")
+            predicted_id = LABEL_TO_ID[predicted_label]
+            confidence = float(output.get("score", 0.0))
+            y_pred.append(predicted_id)
+            y_true_scored.append(actual_label)
+            error = ""
+        except Exception as exc:
+            predicted_label, predicted_id, confidence = "", None, None
+            error = type(exc).__name__
 
         rows.append(
             {
@@ -133,9 +128,10 @@ def main():
                     "Positive" if actual_label == 1 else "Negative"
                 ),
                 "predicted_label": predicted_label.title(),
-                "correct": int(actual_label == predicted_id),
-                "confidence": result.get("score"),
-                "compound": result.get("compound"),
+                "correct": int(actual_label == predicted_id) if predicted_id is not None else "",
+                "confidence": confidence,
+                "backend": model_name,
+                "error": error,
             }
         )
 
@@ -143,10 +139,12 @@ def main():
             print(f"Processed {index}/{len(texts)} examples")
 
     # Calculate evaluation metrics.
-    accuracy = accuracy_score(y_true, y_pred)
+    if not y_pred:
+        raise RuntimeError("All transformer inference calls failed; no metrics were computed.")
+    accuracy = accuracy_score(y_true_scored, y_pred)
 
     precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true,
+        y_true_scored,
         y_pred,
         average="binary",
         pos_label=1,
@@ -154,7 +152,7 @@ def main():
     )
 
     report = classification_report(
-        y_true,
+        y_true_scored,
         y_pred,
         labels=[0, 1],
         target_names=["Negative", "Positive"],
@@ -163,7 +161,7 @@ def main():
     )
 
     matrix = confusion_matrix(
-        y_true,
+        y_true_scored,
         y_pred,
         labels=[0, 1],
     )
@@ -172,12 +170,14 @@ def main():
         "project": "News-melt-AI",
         "task": "Binary sentiment classification",
         "dataset": "GLUE SST-2 validation",
+        "dataset_id": "glue/sst2",
+        "sampling": f"First {len(texts)} records of validation split; deterministic, no shuffle.",
+        "label_mapping": {"0": "Negative", "1": "Positive"},
         "model": model_name,
-        "evaluation_method": (
-            "Existing project sentiment inference; transformer "
-            "required and non-binary predictions rejected."
-        ),
-        "sample_size": len(texts),
+        "evaluation_method": "Direct transformer pipeline inference; failures excluded from metrics and recorded in predictions.",
+        "requested_sample_size": len(texts),
+        "sample_size": len(y_pred),
+        "inference_failures": len(texts) - len(y_pred),
         "accuracy": float(accuracy),
         "positive_precision": float(precision),
         "positive_recall": float(recall),
@@ -207,7 +207,8 @@ def main():
                 "predicted_label",
                 "correct",
                 "confidence",
-                "compound",
+                "backend",
+                "error",
             ],
         )
         writer.writeheader()
@@ -233,7 +234,7 @@ def main():
     print("\nClassification report:")
     print(
         classification_report(
-            y_true,
+            y_true_scored,
             y_pred,
             labels=[0, 1],
             target_names=["Negative", "Positive"],

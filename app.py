@@ -5,6 +5,7 @@ AI-powered news intelligence dashboard.
 
 import sys
 import os
+from html import escape
 from pathlib import Path
 
 # Add project root to path so imports work
@@ -29,7 +30,7 @@ from src.nlp.ner import extract_entities, aggregate_entities
 from src.nlp.keywords import get_trending_topics, build_wordcloud_data
 from src.nlp.summarizer import summarize
 from src.utils.helpers import (
-    deduplicate_articles, format_date, truncate_text,
+    deduplicate_articles, format_date, normalize_article, truncate_text,
     clean_text, sentiment_color, sentiment_emoji,
 )
 from src.utils.cache import get_cached, set_cache, clear_cache, cache_stats
@@ -263,9 +264,11 @@ st.markdown("""
 # FETCH & ANALYZE ARTICLES
 # ──────────────────────────────────────────────
 @st.cache_data(ttl=900, show_spinner=False)
-def fetch_articles(query: str, use_newsapi: bool, use_rss: bool, rss_topic: str, max_articles: int, country: str) -> list[dict]:
-    """Fetch and deduplicate articles from all sources."""
+def fetch_articles(query: str, use_newsapi: bool, use_rss: bool, rss_topic: str, max_articles: int, country: str, newsapi_configured: bool = False) -> tuple[list[dict], list[str]]:
+    """Fetch and deduplicate articles, returning any source-level failures."""
+    # Credential presence is part of Streamlit's cache key, without caching the secret.
     articles = []
+    source_errors = []
 
     if use_newsapi:
         collector = NewsAPICollector()
@@ -273,18 +276,31 @@ def fetch_articles(query: str, use_newsapi: bool, use_rss: bool, rss_topic: str,
             articles += collector.get_everything(query=query, page_size=max_articles)
         else:
             articles += collector.get_top_headlines(country=country, page_size=max_articles)
+        if collector.last_error:
+            source_errors.append("NewsAPI")
 
     if use_rss:
         rss = RSSCollector()
         if query:
             articles += rss.search_feed(query=query, max_items=max_articles // 2)
+            if rss.last_error:
+                source_errors.append("RSS")
         elif rss_topic != "All":
             articles += rss.get_topic_feed(topic=rss_topic, max_items=max_articles // 2)
+            if rss.last_error:
+                source_errors.append("RSS")
         else:
             for topic in list(GOOGLE_NEWS_TOPICS.keys())[:3]:
                 articles += rss.get_topic_feed(topic=topic, max_items=15)
+                if rss.last_error:
+                    source_errors.append(f"RSS ({topic})")
 
-    return deduplicate_articles(articles)
+    unique = deduplicate_articles(articles)[:max(0, int(max_articles))]
+    # Exceptions are not cached by Streamlit. Avoid turning an all-source failure
+    # into a cached empty result that looks like a successful collection.
+    if source_errors and not unique:
+        raise RuntimeError("All usable news collection attempts failed.")
+    return unique, source_errors
 
 
 def run_nlp_analysis(articles: list[dict]) -> list[dict]:
@@ -339,29 +355,70 @@ def run_nlp_analysis(articles: list[dict]) -> list[dict]:
 
 
 if fetch_btn:
-    with st.spinner("Fetching news articles…"):
-        raw_articles = fetch_articles(
-            query=search_query,
-            use_newsapi=use_newsapi,
-            use_rss=use_rss,
-            rss_topic=rss_topic,
-            max_articles=max_articles,
-            country=country,
-        )
+    if use_newsapi and not os.getenv("NEWS_API_KEY"):
+        st.warning("NewsAPI is disabled because NEWS_API_KEY is not configured. RSS collection will still run if selected.")
+    collection_failed = False
+    try:
+        with st.spinner("Fetching news articles…"):
+            raw_articles, source_errors = fetch_articles(
+                query=search_query,
+                use_newsapi=use_newsapi,
+                use_rss=use_rss,
+                rss_topic=rss_topic,
+                max_articles=max_articles,
+                country=country,
+                newsapi_configured=bool(os.getenv("NEWS_API_KEY")),
+            )
+    except Exception as exc:
+        collection_failed = True
+        raw_articles = []
+        source_errors = []
+        st.session_state.articles = []
+        st.session_state.analyzed = False
+        print(f"[Dashboard] Collection failed: {type(exc).__name__}")
+        st.error("News collection failed for all selected sources. Check network access and source configuration.")
 
-    if not raw_articles:
-        st.error("No articles found. Try different filters or check your API key.")
+    if collection_failed:
+        # The preceding error path already reported a failed collection.
+        pass
+    elif not raw_articles:
+        st.session_state.articles = []
+        st.session_state.analyzed = False
+        st.error("No articles were collected. Check the selected source, filters, network, and API credentials.")
     else:
-        st.session_state.articles = run_nlp_analysis(raw_articles)
-        st.session_state.analyzed = True
-        st.session_state.last_fetch_time = datetime.now().strftime("%H:%M:%S")
-        st.success(f"✅ Loaded and analyzed {len(st.session_state.articles)} articles.")
+        if source_errors:
+            st.warning(f"Some sources failed ({', '.join(source_errors)}); showing articles from sources that responded.")
+        try:
+            analyzed_articles = run_nlp_analysis(raw_articles)
+            if len(analyzed_articles) != len(raw_articles):
+                raise RuntimeError("analysis returned an incomplete article set")
+        except Exception as exc:
+            st.session_state.articles = []
+            st.session_state.analyzed = False
+            print(f"[Dashboard] Analysis failed: {type(exc).__name__}")
+            st.error("Articles were collected, but analysis did not complete. See the server log for details.")
+        else:
+            st.session_state.articles = analyzed_articles
+            st.session_state.analyzed = True
+            st.session_state.last_fetch_time = datetime.now().strftime("%H:%M:%S")
+            st.success(f"✅ Loaded and analyzed {len(st.session_state.articles)} articles.")
 
 
 # ──────────────────────────────────────────────
 # MAIN DASHBOARD
 # ──────────────────────────────────────────────
-articles = st.session_state.articles
+articles = []
+for article in st.session_state.articles:
+    if not isinstance(article, dict):
+        continue
+    normalized = normalize_article(article, collector=article.get("collector") or "")
+    # Keep pipeline outputs while filling missing source fields with the
+    # shared schema's safe defaults before building dashboard tables/charts.
+    for field in ("sentiment", "topic", "entities", "summary", "keywords"):
+        if field in article:
+            normalized[field] = article[field]
+    articles.append(normalized)
+articles = deduplicate_articles(articles)
 
 if not articles:
     st.markdown("""
@@ -378,8 +435,8 @@ if not articles:
 # METRICS ROW
 # ──────────────────────────────────────────────
 df = pd.DataFrame(articles)
-sentiment_counts = df["sentiment"].apply(lambda x: x.get("label", "Neutral")).value_counts()
-topic_counts = df["topic"].apply(lambda x: x.get("category", "Other")).value_counts()
+sentiment_counts = df["sentiment"].apply(lambda x: x.get("label", "Neutral") if isinstance(x, dict) else "Neutral").value_counts()
+topic_counts = df["topic"].apply(lambda x: x.get("category", "Other") if isinstance(x, dict) else "Other").value_counts()
 
 col1, col2, col3, col4, col5 = st.columns(5)
 metrics = [
@@ -436,9 +493,9 @@ with tab1:
     # Apply filters
     filtered = articles.copy()
     if sentiment_filter:
-        filtered = [a for a in filtered if a.get("sentiment", {}).get("label") in sentiment_filter]
+        filtered = [a for a in filtered if isinstance(a.get("sentiment"), dict) and a["sentiment"].get("label") in sentiment_filter]
     if topic_filter:
-        filtered = [a for a in filtered if a.get("topic", {}).get("category") in topic_filter]
+        filtered = [a for a in filtered if isinstance(a.get("topic"), dict) and a["topic"].get("category") in topic_filter]
     if source_filter:
         filtered = [a for a in filtered if a.get("source") in source_filter]
 
@@ -446,21 +503,30 @@ with tab1:
 
     # Render article cards
     for art in filtered:
-        sentiment = art.get("sentiment", {})
+        sentiment = art.get("sentiment")
+        if not isinstance(sentiment, dict):
+            sentiment = {}
+        topic = art.get("topic")
+        if not isinstance(topic, dict):
+            topic = {}
         s_label = sentiment.get("label", "Neutral")
+        if s_label not in {"Positive", "Negative", "Neutral"}:
+            s_label = "Neutral"
         s_badge_class = f"badge-{s_label.lower()}"
-        topic_label = art.get("topic", {}).get("category", "General")
-        description = truncate_text(art.get("description", ""), 200)
-        published = format_date(art.get("published_at", ""))
-        source = art.get("source", "Unknown")
-        url = art.get("url", "#")
-        summary = art.get("summary", "")
+        topic_label = escape(str(topic.get("category") or "General"))
+        description = escape(truncate_text(art.get("description", ""), 200))
+        published = escape(str(format_date(art.get("published_at", ""))))
+        source = escape(str(art.get("source") or "Unknown"))
+        raw_url = str(art.get("url") or "")
+        url = escape(raw_url, quote=True) if raw_url.startswith(("https://", "http://")) else "#"
+        title = escape(str(art.get("title") or "No title"))
+        summary = escape(str(art.get("summary") or ""))
 
         st.markdown(f"""
         <div class="article-card">
             <div class="article-title">
                 <a href="{url}" target="_blank" style="color:#e2e8f0; text-decoration:none;">
-                    {art.get('title', 'No title')}
+                    {title}
                 </a>
             </div>
             <div class="article-meta">
@@ -526,7 +592,9 @@ with tab2:
     # Sentiment over time
     st.markdown('<div class="section-title">Sentiment Over Time</div>', unsafe_allow_html=True)
     df_time = df.copy()
-    df_time["sentiment_label"] = df_time["sentiment"].apply(lambda x: x.get("label", "Neutral"))
+    df_time["sentiment_label"] = df_time["sentiment"].apply(
+        lambda x: x.get("label", "Neutral") if isinstance(x, dict) else "Neutral"
+    )
     df_time["published_at"] = pd.to_datetime(df_time["published_at"], errors="coerce", utc=True)
     df_time = df_time.dropna(subset=["published_at"]).sort_values("published_at")
 
@@ -591,7 +659,7 @@ with tab3:
                 st.markdown(f"""
                 <div style="display:flex; align-items:center; gap:0.8rem; margin-bottom:0.5rem;">
                     <span style="color:#64748b; width:1.5rem; font-size:0.8rem;">#{i}</span>
-                    <span style="color:#e2e8f0; font-weight:500; min-width:120px;">{word.title()}</span>
+                    <span style="color:#e2e8f0; font-weight:500; min-width:120px;">{escape(word.title())}</span>
                     <div style="flex:1; background:#1e2235; border-radius:4px; height:8px;">
                         <div style="width:{bar_pct}%; background:linear-gradient(90deg,#6366f1,#ec4899); height:8px; border-radius:4px;"></div>
                     </div>
@@ -710,4 +778,5 @@ with tab5:
     except ImportError:
         st.warning("WordCloud library not installed. Run: `pip install wordcloud`")
     except Exception as e:
-        st.error(f"Word cloud error: {e}")
+        print(f"[Dashboard] Word cloud rendering failed: {type(e).__name__}")
+        st.error("The word cloud could not be rendered. Check the server log for details.")
